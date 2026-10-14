@@ -1,0 +1,664 @@
+"use strict";
+KDPrisonTypes.DollStorage = {
+    name: "DollStorage",
+    default_state: "Jail",
+    starting_state: "Intro",
+    update: (delta) => {
+        if (KDGameData.PrisonerState != 'parole') {
+            KinkyDungeonSetFlag("noPlay", 12);
+        }
+        let idleDoll = [];
+        let punishDoll = [];
+        let idleGuard = [];
+        for (let en of KDMapData.Entities) {
+            if ((en.Enemy?.tags?.prisoner || en.Enemy?.tags?.formerprisoner) && !KDEnemyHasFlag(en, "conveyed_rec")) {
+                if (!KDEnemyHasFlag(en, "punished")) {
+                    punishDoll.push(en);
+                    KinkyDungeonSetEnemyFlag(en, "punishdoll", 9999);
+                }
+                else
+                    idleDoll.push(en);
+            }
+            else if (en.faction == "Enemy" && en.Enemy?.tags.jailer && en != KinkyDungeonJailGuard() && en != KinkyDungeonLeashingEnemy()
+                && !KDEnemyHasFlag(en, "despawn")
+                && (en.idle || KDEnemyHasFlag(en, "idleg"))) {
+                idleGuard.push(en);
+                KinkyDungeonSetEnemyFlag(en, "idleg", 2);
+            }
+        }
+        for (let doll of idleDoll) {
+            let gg = null;
+            let dist = 11;
+            if (KDEnemyHasFlag(doll, "punished")) {
+                let storage = KinkyDungeonNearestJailPoint(doll.x, doll.y, ["display"], undefined, undefined);
+                if (doll.x == storage?.x && doll.y == storage?.y) {
+                    continue;
+                }
+            }
+            for (let guard of idleGuard) {
+                if (!KDEnemyHasFlag(guard, "idlegselect") && KDistChebyshev(guard.x - doll.x, guard.y - doll.y) < dist) {
+                    gg = guard;
+                    dist = KDistChebyshev(guard.x - doll.x, guard.y - doll.y);
+                }
+            }
+            if (gg) {
+                if (dist < 1.5) {
+                    if (punishDoll.length < 20 && !KDEnemyHasFlag(doll, "punished")) {
+                        KinkyDungeonSetEnemyFlag(doll, "punishdoll", 9999);
+                        KinkyDungeonSetEnemyFlag(doll, "punished", Math.floor(KDRandom() * 500) + 200);
+                        KinkyDungeonSetEnemyFlag(doll, "tryNotToSwap", 9999);
+                        punishDoll.push(doll);
+                    }
+                    else {
+                        if (!KDEnemyHasFlag(doll, "punished")) {
+                            delete doll.preferredX;
+                            delete doll.preferredY;
+                        }
+                        KinkyDungeonSetEnemyFlag(gg, "leadawayselect", 2);
+                        KinkyDungeonSetEnemyFlag(doll, "leadAway", 9999);
+                        KinkyDungeonSetEnemyFlag(doll, "tryNotToSwap", 0);
+                    }
+                }
+                else {
+                    KinkyDungeonSetEnemyFlag(gg, "idlegselect", 2);
+                    KinkyDungeonSetEnemyFlag(gg, "overrideMove", 10);
+                    gg.gx = doll.x;
+                    gg.gy = doll.y;
+                    KDUpdateMoveToEntity(gg);
+                }
+            }
+        }
+        let deleteDoll = [];
+        for (let en of KDMapData.Entities) {
+            if (KDEnemyHasFlag(en, "leadAway")) {
+                deleteDoll.push(en);
+            }
+        }
+        for (let doll of deleteDoll) {
+            let gg = null;
+            if (!doll.preferredX) {
+                let point = CommonRandomItemFromList(null, KDMapData.Labels.Delete);
+                if (point)
+                    doll.preferredX = point.x;
+                if (point)
+                    doll.preferredY = point.y;
+            }
+            let storage = doll.preferredX ? { x: doll.preferredX, y: doll.preferredY } : KDMapData.EndPosition;
+            if (doll.x == storage?.x && doll.y == storage?.y) {
+                doll.hp = 0;
+                continue;
+            }
+            let dist = 11;
+            let canLeash = (guard, dd) => {
+                return guard?.Enemy && (!KDEnemyHasFlag(guard, "idlegselect") || !KDEnemyHasFlag(guard, "leadawayselect")) && KDistChebyshev(guard.x - doll.x, guard.y - doll.y) < dd;
+            };
+            if (doll.leash?.entity && KDLookupID(doll.leash.entity)?.Enemy && idleGuard.some((entity) => { return entity.id == doll.leash.entity; })) {
+                gg = KDLookupID(doll.leash.entity);
+                dist = KDistChebyshev(gg.x - doll.x, gg.y - doll.y);
+            }
+            else {
+                if (doll.leash?.reason == "DollLeash") {
+                    KDBreakTether(doll);
+                }
+                for (let guard of idleGuard) {
+                    if (canLeash(guard, dist)) {
+                        gg = guard;
+                        dist = KDistChebyshev(guard.x - doll.x, guard.y - doll.y);
+                    }
+                }
+            }
+            if (gg) {
+                if (dist < 2.5 || doll.leash?.entity == gg.id) {
+                    if (storage) {
+                        if (dist < 1.5 && KDistChebyshev(gg.x - storage.x, gg.y - storage.y) < 1.5) {
+                            doll.hp = 0;
+                        }
+                        else {
+                            KinkyDungeonSetEnemyFlag(gg, "idlegselect", 2);
+                            KinkyDungeonSetEnemyFlag(gg, "overrideMove", 10);
+                            KinkyDungeonSetEnemyFlag(gg, "leashPrisoner", 3);
+                            KinkyDungeonAttachTetherToEntity(1.5, gg, doll, "DollLeash", KDBasePink, 6);
+                            gg.gx = storage.x;
+                            gg.gy = storage.y;
+                            if (dist > 1.5) {
+                                let path = KinkyDungeonFindPath(doll.x, doll.y, gg.x, gg.y, true, true, false, KinkyDungeonMovableTilesEnemy, false, false, false);
+                                if (path && path.length > 0) {
+                                    KDStaggerEnemy(doll);
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    KinkyDungeonSetEnemyFlag(gg, "idlegselect", 2);
+                    KinkyDungeonSetEnemyFlag(gg, "overrideMove", 10);
+                    gg.gx = doll.x;
+                    gg.gy = doll.y;
+                    KDUpdateMoveToEntity(gg);
+                }
+            }
+        }
+        for (let doll of punishDoll) {
+            let gg = null;
+            let storage = KinkyDungeonNearestJailPoint(doll.x, doll.y, ["storage"], undefined, undefined);
+            if (doll.x == storage?.x && doll.y == storage?.y) {
+                KinkyDungeonSetEnemyFlag(doll, "punished", Math.floor(KDRandom() * 500) + 200);
+                continue;
+            }
+            let dist = 11;
+            let canLeash = (guard, dd) => {
+                return guard?.Enemy && !KDEnemyHasFlag(guard, "idlegselect") && KDistChebyshev(guard.x - doll.x, guard.y - doll.y) < dd;
+            };
+            if (doll.leash?.entity && KDLookupID(doll.leash.entity)?.Enemy && idleGuard.some((entity) => { return entity.id == doll.leash.entity; })) {
+                gg = KDLookupID(doll.leash.entity);
+                dist = KDistChebyshev(gg.x - doll.x, gg.y - doll.y);
+            }
+            else {
+                if (doll.leash?.reason == "DollLeash") {
+                    KDBreakTether(doll);
+                }
+                for (let guard of idleGuard) {
+                    if (canLeash(guard, dist)) {
+                        gg = guard;
+                        dist = KDistChebyshev(guard.x - doll.x, guard.y - doll.y);
+                    }
+                }
+            }
+            if (gg) {
+                if (dist < 2.5 || doll.leash?.entity == gg.id) {
+                    let storage = KinkyDungeonNearestJailPoint(gg.x, gg.y, ["storage"], undefined, undefined, true);
+                    if (storage) {
+                        if (dist < 1.5 && KDistChebyshev(gg.x - storage.x, gg.y - storage.y) < 1.5) {
+                            KinkyDungeonSetEnemyFlag(doll, "punished", Math.floor(KDRandom() * 500) + 200);
+                            KDMoveEntity(doll, storage.x, storage.y, false, false, false, false);
+                            KDTieUpEnemy(doll, (doll.Enemy.maxhp || doll.hp) * (1 + KDNPCStruggleThreshMult(doll)) - (doll.boundLevel || 0), "Latex", undefined, false, 0);
+                            KinkyDungeonSetEnemyFlag(doll, "tryNotToSwap", 500);
+                        }
+                        else {
+                            KinkyDungeonSetEnemyFlag(gg, "idlegselect", 2);
+                            KinkyDungeonSetEnemyFlag(gg, "overrideMove", 10);
+                            KinkyDungeonSetEnemyFlag(gg, "leashPrisoner", 3);
+                            KinkyDungeonAttachTetherToEntity(1.5, gg, doll, "DollLeash", KDBaseCyan, 6);
+                            gg.gx = storage.x;
+                            gg.gy = storage.y;
+                            if (dist > 1.5) {
+                                let path = KinkyDungeonFindPath(doll.x, doll.y, gg.x, gg.y, true, true, false, KinkyDungeonMovableTilesEnemy, false, false, false);
+                                if (path && path.length > 0) {
+                                    KDStaggerEnemy(doll);
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    KinkyDungeonSetEnemyFlag(gg, "idlegselect", 2);
+                    KinkyDungeonSetEnemyFlag(gg, "overrideMove", 10);
+                    gg.gx = doll.x;
+                    gg.gy = doll.y;
+                    KDUpdateMoveToEntity(gg);
+                }
+            }
+        }
+        let idleGuards = [];
+        let guardCount = 0;
+        for (let en of KDMapData.Entities) {
+            if (en.faction == "Enemy" && !(en.Enemy?.tags?.prisoner || en.Enemy?.tags?.formerprisoner)) {
+                if (en != KinkyDungeonJailGuard() && en != KinkyDungeonLeashingEnemy() && (en.idle && !KDEnemyHasFlag(en, "idlegselect")))
+                    idleGuards.push(en);
+                if (en.Enemy.tags.jailer)
+                    guardCount += 1;
+            }
+        }
+        if (guardCount > 8) {
+            for (let en of idleGuards) {
+                KinkyDungeonSetEnemyFlag(en, "despawn", 300);
+                KinkyDungeonSetEnemyFlag(en, "vis_despawn", 300);
+                KinkyDungeonSetEnemyFlag(en, "wander", 300);
+                en.gx = KDMapData.EndPosition.x;
+                en.gy = KDMapData.EndPosition.y;
+                en.despawnX = KDMapData.EndPosition.x;
+                en.despawnY = KDMapData.EndPosition.y;
+                en.goToDespawn = true;
+            }
+        }
+        else if (!KinkyDungeonFlags.get("guardspawn")) {
+            if (KinkyDungeonFlags.get("shiftchange")) {
+                KinkyDungeonSetFlag("guardspawn", 4);
+            }
+            else {
+                KinkyDungeonSetFlag("guardspawn", 40);
+            }
+            if (!KinkyDungeonFlags.get("onshift")) {
+                if (!KinkyDungeonFlags.get("shiftchange")) {
+                    KinkyDungeonSetFlag("shiftchange", 100, -1);
+                    KinkyDungeonSetFlag("onshift", 1000, -1);
+                }
+            }
+            if (KDMapData.Labels && KDMapData.Labels.Deploy?.length > 0) {
+                let l = KDMapData.Labels.Deploy[Math.floor(KDRandom() * KDMapData.Labels.Deploy.length)];
+                let tag = KDGetMainFaction() == "Dollsmith" ? "dollsmith" : "cyborg";
+                let Enemy = KinkyDungeonGetEnemy([tag, "robot"], MiniGameKinkyDungeonLevel + 4, 'bel', '0', [tag], undefined, { [tag]: { mult: 4, bonus: 10 } }, ["boss"]);
+                if (Enemy && !KinkyDungeonEnemyAt(KDMapData.EndPosition.x, KDMapData.EndPosition.y)
+                    && KDistChebyshev(KDPlayer().x - KDMapData.EndPosition.x, KDPlayer().y - KDMapData.EndPosition.y)
+                        > 7) {
+                    let en = DialogueCreateEnemy(KDMapData.EndPosition.x, KDMapData.EndPosition.y, Enemy.name);
+                    en.AI = "looseguard";
+                    en.faction = "Enemy";
+                    en.keys = true;
+                    en.gxx = l.x;
+                    en.gyy = l.y;
+                    en.gx = l.x;
+                    en.gy = l.y;
+                    KinkyDungeonSetEnemyFlag(en, "mapguard", -1);
+                    KinkyDungeonSetEnemyFlag(en, "cyberaccess", -1);
+                }
+            }
+        }
+    },
+    states: {
+        Intro: { name: "Intro",
+            init: (params) => {
+                if (KDGameData.PrisonerState == "parole")
+                    KDGameData.PrisonerState = "jail";
+                if (KDMapData.Labels && KDMapData.Labels.Deploy) {
+                    for (let l of KDMapData.Labels.Deploy) {
+                        let tag = KDGetMainFaction() == "Dollsmith" ? "dollsmith" : "cyborg";
+                        let Enemy = KinkyDungeonGetEnemy([tag, "robot"], MiniGameKinkyDungeonLevel + 4, 'bel', '0', [tag], undefined, { [tag]: { mult: 4, bonus: 10 } }, ["boss"]);
+                        if (Enemy && !KinkyDungeonEnemyAt(l.x, l.y)) {
+                            let en = DialogueCreateEnemy(l.x, l.y, Enemy.name);
+                            en.AI = "looseguard";
+                            en.faction = "Enemy";
+                            en.keys = true;
+                            KinkyDungeonSetEnemyFlag(en, "mapguard", -1);
+                            KinkyDungeonSetEnemyFlag(en, "cyberaccess", -1);
+                        }
+                    }
+                }
+                if (KDMapData.Labels && KDMapData.Labels.Patrol) {
+                    for (let l of KDMapData.Labels.Patrol) {
+                        let tag = "robot";
+                        let Enemy = KinkyDungeonGetEnemy([tag], MiniGameKinkyDungeonLevel + 4, 'bel', '0', [tag], undefined, { [tag]: { mult: 4, bonus: 10 } }, ["boss", "oldrobot", "miniboss", "elite"]);
+                        if (Enemy && !KinkyDungeonEnemyAt(l.x, l.y)) {
+                            let en = DialogueCreateEnemy(l.x, l.y, Enemy.name);
+                            en.AI = "hunt";
+                            en.faction = "Enemy";
+                            en.keys = true;
+                            KinkyDungeonSetEnemyFlag(en, "mapguard", -1);
+                            KinkyDungeonSetEnemyFlag(en, "cyberaccess", -1);
+                        }
+                    }
+                }
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                KDPrisonCommonGuard(player);
+                return "Jail";
+            },
+        },
+        Jail: { name: "Jail",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                KDPrisonCommonGuard(player);
+                let lostTrack = KDLostJailTrack(player);
+                if (lostTrack == "Unaware") {
+                    return KDSetPrisonState(player, "Jail");
+                }
+                if (KDPrisonTick(player)) {
+                    let uniformCheck = KDPrisonGetGroups(player, ["cyborg"], "Cyber", KDCYBERPOWER);
+                    if ((uniformCheck.groupsToStrip.length > 0 && !KinkyDungeonFlags.get("failStrip")) || uniformCheck.itemsToApply.length > 0) {
+                        return "Uniform";
+                    }
+                    if (!KinkyDungeonFlags.get("trainingCD")) {
+                        return "Training";
+                    }
+                    return "Storage";
+                }
+                return "Jail";
+            },
+            updateStack: (delta) => {
+                KinkyDungeonSetFlag("noPlay", 10);
+            },
+        },
+        FurnitureTravel: { name: "FurnitureTravel",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let lostTrack = KDLostJailTrack(player);
+                if (lostTrack == "Unaware") {
+                    return KDSetPrisonState(player, "Jail");
+                }
+                if (KDPrisonIsInFurniture(player)) {
+                    return KDPopSubstate(player);
+                }
+                let guard = KDPrisonCommonGuard(player);
+                if (guard) {
+                    let action = (KDGameData.PrisonerState == 'jail' && !KinkyDungeonAggressive(guard, player)) ? "leashFurniture" : "leashFurnitureAggressive";
+                    if (guard.IntentAction != action)
+                        KDIntentEvents[action].trigger(guard, {});
+                    if (lostTrack) {
+                        guard.gx = player.x;
+                        guard.gy = player.y;
+                        KDUpdateMoveToEntity(guard);
+                        KinkyDungeonSetEnemyFlag(guard, "wander", 30);
+                        KinkyDungeonSetEnemyFlag(guard, "overrideMove", 10);
+                    }
+                    if (KDGameData.PrisonerState == 'jail') {
+                        KinkyDungeonSetEnemyFlag(guard, "notouchie", 2);
+                    }
+                }
+                else {
+                    return KDPopSubstate(player);
+                }
+                return KDCurrentPrisonState(player);
+            },
+        },
+        Uniform: { name: "Uniform",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let guard = KDPrisonCommonGuard(player);
+                if (KDPrisonIsInFurniture(player)) {
+                    let action = "Follow";
+                    if (guard.IntentAction != action)
+                        KDIntentEvents[action].trigger(guard, {});
+                    else
+                        guard.playWithPlayer = Math.max(guard.playWithPlayer, 3);
+                    let uniformCheck = KDPrisonGetGroups(player, ["cyborg"], "Cyber", KDCYBERPOWER);
+                    if (uniformCheck.groupsToStrip.length > 0 && !KinkyDungeonFlags.get("failStrip")) {
+                        KDGoToSubState(player, "UniformApply");
+                        return KDGoToSubState(player, "UniformRemoveExtra");
+                    }
+                    else if (uniformCheck.itemsToApply.length > 0) {
+                        return KDGoToSubState(player, "UniformApply");
+                    }
+                    return KDPopSubstate(player);
+                }
+                return KDGoToSubState(player, "FurnitureTravel");
+            },
+        },
+        UniformRemoveExtra: { name: "UniformRemoveExtra",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let guard = KDPrisonCommonGuard(player);
+                if (guard && KDPrisonIsInFurniture(player)) {
+                    let action = "Follow";
+                    if (guard.IntentAction != action)
+                        KDIntentEvents[action].trigger(guard, {});
+                    else
+                        guard.playWithPlayer = Math.max(guard.playWithPlayer, 3);
+                    KinkyDungeonSetEnemyFlag(guard, "overrideMove", 2);
+                    if (KDistChebyshev(guard.x - player.x, guard.y - player.y) < 1.5) {
+                        if (KDPrisonIsInFurniture(player)) {
+                            let lockType = "Cyber";
+                            return KDDoUniformRemove(player, guard, ["cyborg"], lockType, KDCYBERPOWER);
+                        }
+                    }
+                    else {
+                        return KDCurrentPrisonState(player);
+                    }
+                }
+                return KDGoToSubState(player, "FurnitureTravel");
+            },
+        },
+        UniformApply: { name: "UniformApply",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let guard = KDPrisonCommonGuard(player);
+                if (KDPrisonIsInFurniture(player)) {
+                    if (guard) {
+                        let action = "Follow";
+                        if (guard.IntentAction != action)
+                            KDIntentEvents[action].trigger(guard, {});
+                        else
+                            guard.playWithPlayer = Math.max(guard.playWithPlayer, 3);
+                        KinkyDungeonSetEnemyFlag(guard, "overrideMove", 2);
+                        if (KDistChebyshev(guard.x - player.x, guard.y - player.y) < 1.5) {
+                            let lockType = "Cyber";
+                            return KDDoUniformApply(player, guard, ["cyborg"], lockType, KDCYBERPOWER);
+                        }
+                    }
+                    else {
+                        return KDCurrentPrisonState(player);
+                    }
+                }
+                return KDGoToSubState(player, "FurnitureTravel");
+            },
+        },
+        Storage: { name: "Storage",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                KDPrisonCommonGuard(player);
+                let jailPoint = KinkyDungeonNearestJailPoint(player.x, player.y, ["storage"]);
+                if (!jailPoint || jailPoint.x != player.x || jailPoint.y != player.y) {
+                    return KDGoToSubState(player, "StorageTravel");
+                }
+                if (KDPrisonIsInFurniture(player)) {
+                    let uniformCheck = KDPrisonGetGroups(player, ["cyborg"], "Cyber", KDCYBERPOWER);
+                    if (uniformCheck.itemsToApply.length > 0) {
+                        return KDGoToSubState(player, "Uniform");
+                    }
+                    KinkyDungeonFlags.set("PrisonStorageTimer", (KinkyDungeonFlags.get("PrisonStorageTimer") || 0) + delta * 2);
+                    if (KinkyDungeonFlags.get("PrisonStorageTimer") > 300) {
+                        KinkyDungeonSetFlag("PrisonCyberTrainingFlag", 10);
+                        return KDSetPrisonState(player, "Jail");
+                    }
+                    return KDCurrentPrisonState(player);
+                }
+                return KDSetPrisonState(player, "Jail");
+            },
+        },
+        Training: { name: "Training",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let label = KDMapData.Labels?.Training ? KDMapData.Labels.Training[0] : null;
+                let rad = 3;
+                if (label && (KDistEuclidean(label.x - player.x, label.y - player.y) > rad)) {
+                    return KDGoToSubState(player, "TrainingTravel");
+                }
+                if (!KinkyDungeonFlags.get("trainingCD")) {
+                    KinkyDungeonSetFlag("trainingCD", 300);
+                    return KDGoToSubState(player, "LatexTraining");
+                }
+                return KDSetPrisonState(player, "Jail");
+            },
+            updateStack: (delta) => {
+                let label = KDMapData.Labels?.Training ? KDMapData.Labels.Training[0] : null;
+                let rad = 5;
+                if (label) {
+                    for (let x = label.x - rad; x <= label.x + rad; x++)
+                        for (let y = label.y - rad; y <= label.y + rad; y++)
+                            KDRevealTile(x, y, 8);
+                }
+            },
+            finally: (delta, currentState, stackPop) => {
+                let labels = KDMapData.Labels?.TrainingDoor;
+                if (labels?.length > 0) {
+                    for (let td of labels) {
+                        if ("dD".includes(KinkyDungeonMapGet(td.x, td.y))) {
+                            KinkyDungeonMapSet(td.x, td.y, '2');
+                            let door = KinkyDungeonTilesGet(td.x + ',' + td.y);
+                            if (door) {
+                                delete door.Type;
+                                delete door.Lock;
+                                delete door.ReLock;
+                            }
+                        }
+                    }
+                }
+            },
+        },
+        LatexTraining: { name: "LatexTraining",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                if (!KinkyDungeonFlags.get("trainingStart")) {
+                    KinkyDungeonSetFlag("latexTrainingStart", 0);
+                    return KDPopSubstate(player);
+                }
+                let guard = KDPrisonCommonGuard(player);
+                let label = KDMapData.Labels?.Training ? KDMapData.Labels.Training[0] : null;
+                let rad = 5;
+                if (label && (KDistChebyshev(label.x - player.x, label.y - player.y) < rad)) {
+                    if (!KinkyDungeonFlags.get("latexTraining") && !KinkyDungeonFlags.get("latexTrainingStart")) {
+                        KinkyDungeonSetFlag("latexTraining", 30);
+                        KinkyDungeonSetFlag("latexTrainingStart", KinkyDungeonFlags.get("trainingStart"));
+                        if (guard) {
+                            guard.path = undefined;
+                            KinkyDungeonSetEnemyFlag(guard, "wander", 0);
+                        }
+                        KDBreakTether(player);
+                        KDForceWanderFar(player, 13);
+                        KDResetAllAggro(player);
+                        KDResetAllIntents(false, 30, player);
+                        KDGameData.PrisonerState = 'jail';
+                        for (let xx of [label.x + 3, label.x - 3]) {
+                            let e = DialogueCreateEnemy(xx, label.y, "LatexSprayer");
+                            e.faction = "Ambush";
+                            e.vp = 2;
+                            e.aware = true;
+                            e.hostile = KinkyDungeonFlags.get("latexTraining");
+                            e.summoned = false;
+                            KinkyDungeonSetEnemyFlag(e, "noignore", KinkyDungeonFlags.get("latexTraining"));
+                            KinkyDungeonApplyBuffToEntity(e, KDTrainingUnit);
+                        }
+                        let labels = KDMapData.Labels?.TrainingDoor;
+                        if (labels?.length > 0) {
+                            for (let td of labels) {
+                                KinkyDungeonMapSet(td.x, td.y, "D");
+                                let door = KinkyDungeonTilesGet(td.x + ',' + td.y);
+                                if (!door)
+                                    door = KinkyDungeonTilesSet(td.x + ',' + td.y, {});
+                                door.Type = "Door";
+                                door.Lock = "Cyber";
+                                door.ReLock = true;
+                                door.Jail = true;
+                            }
+                        }
+                    }
+                    let enemiesNear = KDNearbyEnemies(label.x, label.y, rad + 2);
+                    for (let en of enemiesNear) {
+                        if (en.faction != "Ambush" && KDGetFaction(en) != "Player") {
+                            if (!KDEnemyHasFlag(en, "trainingLeave")) {
+                                KDWanderEnemy(en);
+                                KinkyDungeonSetEnemyFlag(en, "trainingLeave", 10);
+                            }
+                        }
+                    }
+                    if (!KinkyDungeonFlags.get("latexTraining"))
+                        KinkyDungeonSetFlag("trainingStart", 0);
+                    return KDCurrentPrisonState(player);
+                }
+                return KDPopSubstate(player);
+            },
+        },
+        StorageTravel: { name: "StorageTravel",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let lostTrack = KDLostJailTrack(player);
+                if (lostTrack == "Unaware") {
+                    return KDSetPrisonState(player, "Jail");
+                }
+                let jailPointTarget = KDRandomJailPoint(player.x, player.y, ["storage"], undefined, undefined);
+                let jailPointNearest = KinkyDungeonNearestJailPoint(player.x, player.y, ["storage"], undefined, undefined);
+                if (!(jailPointTarget && jailPointTarget.x == player.x && jailPointTarget.y == player.y)
+                    && !(jailPointNearest && jailPointNearest.x == player.x && jailPointNearest.y == player.y)) {
+                    let guard = KDPrisonCommonGuard(player);
+                    if (guard) {
+                        let action = "leashStorage";
+                        if (guard.IntentAction != action) {
+                            KDIntentEvents[action].trigger(guard, {});
+                        }
+                        if (lostTrack) {
+                            guard.gx = player.x;
+                            guard.gy = player.y;
+                            KDUpdateMoveToEntity(guard);
+                            KinkyDungeonSetEnemyFlag(guard, "wander", 30);
+                            KinkyDungeonSetEnemyFlag(guard, "overrideMove", 10);
+                        }
+                        if (KinkyDungeonLeashingEnemy() == guard) {
+                            KinkyDungeonSetEnemyFlag(guard, "focusLeash", 2);
+                        }
+                        KinkyDungeonSetEnemyFlag(guard, "notouchie", 2);
+                    }
+                    else {
+                        return KDPopSubstate(player);
+                    }
+                    return KDCurrentPrisonState(player);
+                }
+                if (KDPrisonIsInFurniture(player)) {
+                    return KDPopSubstate(player);
+                }
+                return KDCurrentPrisonState(player);
+            },
+        },
+        TrainingTravel: { name: "TrainingTravel",
+            init: (params) => {
+                return "";
+            },
+            update: (delta) => {
+                let player = KinkyDungeonPlayerEntity;
+                let label = KDMapData.Labels?.Training ? KDMapData.Labels.Training[0] : null;
+                let rad = 3;
+                let lostTrack = KDLostJailTrack(player);
+                if (lostTrack == "Unaware") {
+                    return KDSetPrisonState(player, "Jail");
+                }
+                if (label && (KDistEuclidean(label.x - player.x, label.y - player.y) > rad) && KDPlayerLeashable(player)) {
+                    let guard = KDPrisonCommonGuard(player);
+                    if (guard) {
+                        let action = "leashToPoint";
+                        if (guard.IntentAction != action) {
+                            guard.gx = player.x;
+                            guard.gy = player.y;
+                            KDUpdateMoveToEntity(guard);
+                            KDIntentEvents[action].trigger(guard, { point: label, radius: 1, target: player });
+                        }
+                        if (lostTrack) {
+                            guard.gx = player.x;
+                            guard.gy = player.y;
+                            KDUpdateMoveToEntity(guard);
+                            KinkyDungeonSetEnemyFlag(guard, "wander", 30);
+                            KinkyDungeonSetEnemyFlag(guard, "overrideMove", 10);
+                        }
+                        if (KinkyDungeonLeashingEnemy() == guard) {
+                            KinkyDungeonSetEnemyFlag(guard, "focusLeash", 2);
+                        }
+                        KinkyDungeonSetEnemyFlag(guard, "notouchie", 2);
+                    }
+                    else {
+                        return KDPopSubstate(player);
+                    }
+                    return KDCurrentPrisonState(player);
+                }
+                KinkyDungeonSetFlag("trainingStart", 300);
+                return KDPopSubstate(player);
+            },
+        },
+    },
+};
+//# sourceMappingURL=DollStorage.js.map
